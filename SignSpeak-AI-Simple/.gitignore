@@ -1,0 +1,11 @@
+# Virtual environment
+venv/
+env/
+__pycache__/
+*.pyc
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Large model assets (optional if > 100MB, but task file is ~7MB so it can be committed)

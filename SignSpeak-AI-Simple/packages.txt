@@ -1,6 +1,5 @@
 libegl1
 libgl1
-libgl1-mesa-glx
 libgles2
 libglib2.0-0
 espeak

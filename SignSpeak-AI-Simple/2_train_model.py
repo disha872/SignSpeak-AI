@@ -2,103 +2,105 @@ import os
 import pickle
 import numpy as np
 import pandas as pd
-import tensorflow as tf
-
-from sklearn.preprocessing import LabelEncoder
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import classification_report
-
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Input, Dense, Dropout
 
 # ---------------------------------------------------------
 # 1. LOAD DATASET
 # ---------------------------------------------------------
-CSV_PATH = "data/dataset.csv"
+base_dir = os.path.dirname(os.path.abspath(__file__))
+csv_path = os.path.join(base_dir, "data", "dataset.csv")
 
-if not os.path.exists(CSV_PATH):
-    print(f"Error: Dataset '{CSV_PATH}' not found. Run 1_collect_data.py first!")
-    exit()
+if not os.path.exists(csv_path):
+    csv_path = "data/dataset.csv"
 
-df = pd.read_csv(CSV_PATH)
-print("Dataset Loaded Successfully!")
-print("Dataset Shape:", df.shape)
-print("\nClasses Count:")
+if not os.path.exists(csv_path):
+    print(f"Error: Dataset '{csv_path}' not found!")
+    exit(1)
+
+df = pd.read_csv(csv_path)
+print("Dataset Loaded Successfully! Shape:", df.shape)
+print("\nClass Counts:")
 print(df["label"].value_counts())
 
-# Separate Features (X) and Labels (y)
-X = df.drop(columns=["label"]).values.astype(np.float32)
-y = df["label"].values
+labels = df["label"].values
+features = df.drop(columns=["label"]).values.astype(np.float32)
 
 # ---------------------------------------------------------
-# 2. ENCODE LABELS
+# 2. FEATURE NORMALIZATION & AUGMENTATION
 # ---------------------------------------------------------
+# Reshape to (N, 21, 3)
+N = len(features)
+coords = features.reshape(N, 21, 3)
+
+# Wrist Centering (Point 0 subtraction)
+coords = coords - coords[:, 0:1, :]
+
+# Scale Normalization (Distance invariant)
+scales = np.max(np.linalg.norm(coords, axis=2, keepdims=True), axis=1, keepdims=True)
+scales[scales == 0] = 1.0
+norm_coords = coords / scales
+
+# Augmentation: Left/Right Hand & Camera Mirroring Invariance (Flip X axis)
+flipped_coords = norm_coords.copy()
+flipped_coords[:, :, 0] *= -1.0
+
+# Combine Original + Flipped
+aug_coords = np.vstack([norm_coords, flipped_coords])
+aug_labels = np.concatenate([labels, labels])
+
+X_final = aug_coords.reshape(len(aug_coords), 63)
+
+# Encode Labels
 label_encoder = LabelEncoder()
-y_encoded = label_encoder.fit_transform(y)
-num_classes = len(label_encoder.classes_)
+y_final = label_encoder.fit_transform(aug_labels)
 
-print("\nClasses:", list(label_encoder.classes_))
-
-# ---------------------------------------------------------
-# 3. TRAIN / TEST SPLIT (80% Train, 20% Test)
-# ---------------------------------------------------------
+# Train/Test Split
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y_encoded, test_size=0.20, random_state=42, stratify=y_encoded
+    X_final, y_final, test_size=0.20, random_state=42, stratify=y_final
 )
 
 print(f"\nTraining Samples: {len(X_train)} | Testing Samples: {len(X_test)}")
 
 # ---------------------------------------------------------
-# 4. BUILD SIMPLE NEURAL NETWORK
+# 3. TRAIN RANDOM FOREST CLASSIFIER
 # ---------------------------------------------------------
-model = Sequential([
-    Input(shape=(63,)),
-    Dense(64, activation="relu"),
-    Dropout(0.2),
-    Dense(32, activation="relu"),
-    Dense(num_classes, activation="softmax")
-])
+print("\nTraining Robust Classifier...")
+model = RandomForestClassifier(n_estimators=100, random_state=42)
+model.fit(X_train, y_train)
 
-model.compile(
-    optimizer="adam",
-    loss="sparse_categorical_crossentropy",
-    metrics=["accuracy"]
-)
-
-model.summary()
-
-# ---------------------------------------------------------
-# 5. TRAIN MODEL
-# ---------------------------------------------------------
-print("\nTraining Neural Network...")
-history = model.fit(
-    X_train, y_train,
-    validation_split=0.20,
-    epochs=40,
-    batch_size=16,
-    verbose=1
-)
-
-# ---------------------------------------------------------
-# 6. EVALUATE MODEL
-# ---------------------------------------------------------
-test_loss, test_acc = model.evaluate(X_test, y_test, verbose=0)
-print("\n==========================================")
+test_acc = model.score(X_test, y_test)
+print("==========================================")
 print(f"  TEST ACCURACY: {test_acc * 100:.2f}%")
 print("==========================================")
 
-y_pred = np.argmax(model.predict(X_test), axis=1)
+y_pred = model.predict(X_test)
 print("\nClassification Report:")
 print(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
 
 # ---------------------------------------------------------
-# 7. SAVE MODEL AND ENCODER
+# 4. SAVE MODEL AND ENCODER
 # ---------------------------------------------------------
+models_dir = os.path.join(base_dir, "models")
+os.makedirs(models_dir, exist_ok=True)
 os.makedirs("models", exist_ok=True)
-model.save("models/model.keras")
+
+model_file = os.path.join(models_dir, "model.pkl")
+encoder_file = os.path.join(models_dir, "label_encoder.pkl")
+
+with open(model_file, "wb") as f:
+    pickle.dump(model, f)
+
+with open(encoder_file, "wb") as f:
+    pickle.dump(label_encoder, f)
+
+with open("models/model.pkl", "wb") as f:
+    pickle.dump(model, f)
 
 with open("models/label_encoder.pkl", "wb") as f:
     pickle.dump(label_encoder, f)
 
-print("\nModel saved to: models/model.keras")
-print("Encoder saved to: models/label_encoder.pkl")
+print(f"\nModel saved successfully to {model_file}")
+print(f"Encoder saved successfully to {encoder_file}")

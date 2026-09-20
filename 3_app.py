@@ -16,7 +16,6 @@ from gtts import gTTS
 from collections import deque, Counter
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-import tensorflow as tf
 
 # Check if running on Streamlit Cloud server
 IS_STREAMLIT_CLOUD = os.path.exists("/mount/src") or "STREAMLIT_SERVER_MODE" in os.environ
@@ -87,44 +86,31 @@ def load_assets():
         "SignSpeak-AI-Simple/models"
     ]
 
-    model_path, encoder_path, hand_model_path = None, None, None
+    model, encoder, detector = None, None, None
 
     for d in possible_dirs:
-        m = os.path.join(d, "model.keras")
-        e = os.path.join(d, "label_encoder.pkl")
-        h = os.path.join(d, "hand_landmarker.task")
-        if os.path.exists(m) and os.path.exists(e) and os.path.exists(h):
-            model_path, encoder_path, hand_model_path = m, e, h
-            break
+        m_pkl = os.path.join(d, "model.pkl")
+        e_pkl = os.path.join(d, "label_encoder.pkl")
+        h_task = os.path.join(d, "hand_landmarker.task")
 
-    if not model_path:
-        model_path = "models/model.keras"
-        encoder_path = "models/label_encoder.pkl"
-        hand_model_path = "models/hand_landmarker.task"
+        if os.path.exists(m_pkl) and os.path.exists(e_pkl) and os.path.exists(h_task):
+            try:
+                with open(m_pkl, "rb") as f:
+                    model = pickle.load(f)
+                with open(e_pkl, "rb") as f:
+                    encoder = pickle.load(f)
 
-    model, encoder, detector = None, None, None
-    if os.path.exists(model_path) and os.path.exists(encoder_path):
-        try:
-            model = tf.keras.models.load_model(model_path)
-            with open(encoder_path, "rb") as f:
-                encoder = pickle.load(f)
-        except Exception as ex:
-            st.error(f"Error loading Keras model: {ex}")
-
-    if os.path.exists(hand_model_path):
-        try:
-            base_options = python.BaseOptions(model_asset_path=hand_model_path)
-            options = vision.HandLandmarkerOptions(
-                base_options=base_options,
-                running_mode=vision.RunningMode.IMAGE,
-                num_hands=1,
-                min_hand_detection_confidence=0.5
-            )
-            detector = vision.HandLandmarker.create_from_options(options)
-        except Exception as ex:
-            st.error(f"MediaPipe Initialization Error: {ex}")
-    else:
-        st.error(f"Hand landmarker model file not found at {hand_model_path}")
+                base_options = python.BaseOptions(model_asset_path=h_task)
+                options = vision.HandLandmarkerOptions(
+                    base_options=base_options,
+                    running_mode=vision.RunningMode.IMAGE,
+                    num_hands=1,
+                    min_hand_detection_confidence=0.5
+                )
+                detector = vision.HandLandmarker.create_from_options(options)
+                break
+            except Exception as ex:
+                st.error(f"Asset loading error from {d}: {ex}")
 
     return model, encoder, detector
 
@@ -148,14 +134,28 @@ def process_frame(frame, model, encoder, detector):
     if result.hand_landmarks:
         hand = result.hand_landmarks[0]
         coords = np.array([[lm.x, lm.y, lm.z] for lm in hand], dtype=np.float32)
-        coords -= coords[0] # Wrist subtraction
+
+        # 1. Wrist Centering
+        coords -= coords[0]
+
+        # 2. Scale Normalization (Distance Invariant)
+        scale = np.max(np.linalg.norm(coords, axis=1))
+        if scale > 0:
+            coords /= scale
+
         features = coords.flatten().reshape(1, -1) # (1, 63)
 
-        probs = model.predict(features, verbose=0)[0]
-        pred_idx = np.argmax(probs)
-        confidence = float(probs[pred_idx])
+        # 3. Model Prediction
+        if hasattr(model, "predict_proba"):
+            probs = model.predict_proba(features)[0]
+            pred_idx = np.argmax(probs)
+            confidence = float(probs[pred_idx])
+        else:
+            probs = model.predict(features, verbose=0)[0]
+            pred_idx = np.argmax(probs)
+            confidence = float(probs[pred_idx])
 
-        if confidence >= 0.70:
+        if confidence >= 0.50:
             predicted_sign = str(encoder.inverse_transform([pred_idx])[0])
 
         h, w, _ = frame.shape
@@ -168,7 +168,7 @@ def process_frame(frame, model, encoder, detector):
 # 4. MAIN APP INTERFACE
 # ---------------------------------------------------------
 if model is None or detector is None:
-    st.error("⚠️ Model or MediaPipe Landmarker not initialized properly. Please verify model files exist!")
+    st.error("⚠️ Model or MediaPipe Landmarker not initialized properly. Please verify model files exist in models/ directory!")
 else:
     cam_mode = st.radio(
         "📷 Select Input Method:",

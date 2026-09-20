@@ -14,6 +14,9 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import tensorflow as tf
 
+# Check if running on Streamlit Cloud server
+IS_STREAMLIT_CLOUD = os.path.exists("/mount/src") or "STREAMLIT_SERVER_MODE" in os.environ
+
 # ---------------------------------------------------------
 # 1. STREAMLIT PAGE CONFIG & CSS
 # ---------------------------------------------------------
@@ -24,7 +27,7 @@ st.markdown("""
     .stApp { background-color: #0f172a; color: #f8fafc; }
     .title-banner { background: linear-gradient(90deg, #6366f1 0%, #a855f7 100%); padding: 20px; border-radius: 12px; color: white; text-align: center; margin-bottom: 20px; }
     .sentence-box { background: #1e1b4b; border: 2px solid #6366f1; border-radius: 12px; padding: 15px; font-size: 22px; color: #38bdf8; min-height: 70px; margin-top: 15px; }
-    .status-card { background: #1e293b; border-radius: 10px; padding: 15px; border-left: 5px solid #6366f1; }
+    .notice-box { background: #1e293b; border: 1px solid #38bdf8; border-radius: 8px; padding: 12px; margin-bottom: 15px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -148,8 +151,9 @@ if model is None or detector is None:
     st.error("⚠️ Model or MediaPipe Landmarker not initialized properly. Please verify model files exist!")
 else:
     cam_mode = st.radio(
-        "📷 Select Input Source:",
-        ["🌐 Browser Webcam (Recommended for Cloud)", "💻 Local OpenCV Camera (Local PC)", "📁 Upload Image"],
+        "📷 Select Input Method:",
+        ["🌐 Browser Webcam (Select for Website Deployment)", "💻 Local OpenCV Camera (Use only on Local Laptop)", "📁 Upload Image"],
+        index=0,
         horizontal=True
     )
 
@@ -181,9 +185,9 @@ else:
         sentence_placeholder.markdown(f'<div class="sentence-box">{sentence or "<i>[ Waiting for signs... ]</i>"}</div>', unsafe_allow_html=True)
 
     with col_video:
-        if cam_mode == "🌐 Browser Webcam (Recommended for Cloud)":
-            st.info("💡 Allow camera access in your browser window to capture signs.")
-            img_file_buffer = st.camera_input("Take a snapshot of your sign gesture")
+        if cam_mode == "🌐 Browser Webcam (Select for Website Deployment)":
+            st.info("👇 Click 'Take Photo' below to capture your hand sign from your browser camera.")
+            img_file_buffer = st.camera_input("Browser Webcam Feed")
 
             if img_file_buffer is not None:
                 bytes_data = img_file_buffer.getvalue()
@@ -195,64 +199,70 @@ else:
                 if predicted_sign != "Neutral":
                     pred_placeholder.markdown(f"### Sign: **{predicted_sign}**")
                     conf_placeholder.progress(confidence, text=f"Confidence: {confidence*100:.1f}%")
-                    if st.button(f"➕ Add '{predicted_sign}' to Sentence", type="primary"):
+                    if st.button(f"➕ Add '{predicted_sign}' to Sentence", type="primary", use_container_width=True):
                         st.session_state.words_list.append(predicted_sign)
                         speak_text(predicted_sign)
                         st.rerun()
                 else:
-                    pred_placeholder.markdown("### Sign: *[ No sign detected / Low confidence ]*")
+                    pred_placeholder.markdown("### Sign: *[ No hand / low confidence ]*")
                     conf_placeholder.progress(0.0, text="Confidence: 0%")
 
                 st.image(cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB), caption="Processed Hand Landmark Frame", use_container_width=True)
 
-        elif cam_mode == "💻 Local OpenCV Camera (Local PC)":
+        elif cam_mode == "💻 Local OpenCV Camera (Use only on Local Laptop)":
+            if IS_STREAMLIT_CLOUD:
+                st.warning("⚠️ **Note:** 'Local OpenCV Camera' only works when running the app locally on your laptop using `streamlit run app.py`. On this Streamlit Cloud website, please select **'🌐 Browser Webcam'** above!")
+
             run_camera = st.checkbox("▶ Start Local Camera Stream", value=False)
             video_placeholder = st.empty()
 
             if run_camera:
                 cap = cv2.VideoCapture(0)
-                history_buffer = deque(maxlen=8)
-                last_word = None
-                last_word_time = 0.0
+                if not cap.isOpened():
+                    st.error("Cannot access local camera hardware. If running on Streamlit Cloud website, please select '🌐 Browser Webcam' above!")
+                else:
+                    history_buffer = deque(maxlen=8)
+                    last_word = None
+                    last_word_time = 0.0
 
-                while run_camera:
-                    ret, frame = cap.read()
-                    if not ret:
-                        st.error("Cannot access local camera.")
-                        break
+                    while run_camera:
+                        ret, frame = cap.read()
+                        if not ret:
+                            st.error("Cannot access local camera. Please select '🌐 Browser Webcam' above for Streamlit Cloud!")
+                            break
 
-                    frame = cv2.flip(frame, 1)
-                    annotated_frame, predicted_sign, confidence = process_frame(frame, model, encoder, detector)
+                        frame = cv2.flip(frame, 1)
+                        annotated_frame, predicted_sign, confidence = process_frame(frame, model, encoder, detector)
 
-                    history_buffer.append(predicted_sign)
-                    counts = Counter(history_buffer)
-                    most_common_sign, count = counts.most_common(1)[0]
+                        history_buffer.append(predicted_sign)
+                        counts = Counter(history_buffer)
+                        most_common_sign, count = counts.most_common(1)[0]
 
-                    if most_common_sign != "Neutral" and count >= 5:
-                        curr_time = time.time()
-                        if most_common_sign != last_word or (curr_time - last_word_time) > 1.8:
-                            st.session_state.words_list.append(most_common_sign)
-                            speak_text(most_common_sign)
-                            last_word = most_common_sign
-                            last_word_time = curr_time
+                        if most_common_sign != "Neutral" and count >= 5:
+                            curr_time = time.time()
+                            if most_common_sign != last_word or (curr_time - last_word_time) > 1.8:
+                                st.session_state.words_list.append(most_common_sign)
+                                speak_text(most_common_sign)
+                                last_word = most_common_sign
+                                last_word_time = curr_time
 
-                    if predicted_sign != "Neutral":
-                        pred_placeholder.markdown(f"### Sign: **{predicted_sign}**")
-                        conf_placeholder.progress(confidence, text=f"Confidence: {confidence*100:.1f}%")
-                        cv2.putText(annotated_frame, f"Sign: {predicted_sign} ({confidence*100:.0f}%)", (20, 50),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-                    else:
-                        pred_placeholder.markdown("### Sign: *[ Waiting for hand ]*")
-                        conf_placeholder.progress(0.0, text="Confidence: 0%")
+                        if predicted_sign != "Neutral":
+                            pred_placeholder.markdown(f"### Sign: **{predicted_sign}**")
+                            conf_placeholder.progress(confidence, text=f"Confidence: {confidence*100:.1f}%")
+                            cv2.putText(annotated_frame, f"Sign: {predicted_sign} ({confidence*100:.0f}%)", (20, 50),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+                        else:
+                            pred_placeholder.markdown("### Sign: *[ Waiting for hand ]*")
+                            conf_placeholder.progress(0.0, text="Confidence: 0%")
 
-                    video_placeholder.image(annotated_frame, channels="BGR", use_container_width=True)
+                        video_placeholder.image(annotated_frame, channels="BGR", use_container_width=True)
 
-                    sentence = " ".join(st.session_state.words_list).capitalize()
-                    if sentence: sentence += "."
-                    sentence_placeholder.markdown(f'<div class="sentence-box">{sentence or "<i>[ Waiting for signs... ]</i>"}</div>', unsafe_allow_html=True)
-                    time.sleep(0.01)
+                        sentence = " ".join(st.session_state.words_list).capitalize()
+                        if sentence: sentence += "."
+                        sentence_placeholder.markdown(f'<div class="sentence-box">{sentence or "<i>[ Waiting for signs... ]</i>"}</div>', unsafe_allow_html=True)
+                        time.sleep(0.01)
 
-                cap.release()
+                    cap.release()
 
         elif cam_mode == "📁 Upload Image":
             uploaded_file = st.file_uploader("Upload an image of a hand sign", type=["jpg", "png", "jpeg"])
@@ -266,7 +276,7 @@ else:
                 if predicted_sign != "Neutral":
                     pred_placeholder.markdown(f"### Sign: **{predicted_sign}**")
                     conf_placeholder.progress(confidence, text=f"Confidence: {confidence*100:.1f}%")
-                    if st.button(f"➕ Add '{predicted_sign}' to Sentence", type="primary"):
+                    if st.button(f"➕ Add '{predicted_sign}' to Sentence", type="primary", use_container_width=True):
                         st.session_state.words_list.append(predicted_sign)
                         speak_text(predicted_sign)
                         st.rerun()

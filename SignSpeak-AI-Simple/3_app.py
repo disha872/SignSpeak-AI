@@ -1,13 +1,17 @@
 import os
 import time
 import pickle
+import io
+import base64
 import numpy as np
 import cv2
 import pyttsx3
 import threading
 import streamlit as st
+import streamlit.components.v1 as components
 import mediapipe as mp
 from PIL import Image
+from gtts import gTTS
 
 from collections import deque, Counter
 from mediapipe.tasks import python
@@ -39,11 +43,27 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 2. OFFLINE VOICE SYNTHESIZER (pyttsx3 Background Thread)
+# 2. VOICE SYNTHESIZER (Browser Web Speech API + gTTS + pyttsx3)
 # ---------------------------------------------------------
 def speak_text(text):
     if not text: return
-    def _speak():
+    # 1. Browser Native Speech Synthesis (JavaScript)
+    clean_text = text.replace('"', '\\"').replace("'", "\\'")
+    js = f"""
+        <script>
+            if ('speechSynthesis' in window) {{
+                window.speechSynthesis.cancel();
+                var utterance = new SpeechSynthesisUtterance("{clean_text}");
+                utterance.rate = 0.95;
+                utterance.pitch = 1.0;
+                window.speechSynthesis.speak(utterance);
+            }}
+        </script>
+    """
+    components.html(js, height=0, width=0)
+
+    # 2. Offline pyttsx3 fallback for local PC execution
+    def _speak_local():
         try:
             engine = pyttsx3.init()
             engine.setProperty('rate', 150)
@@ -51,7 +71,7 @@ def speak_text(text):
             engine.runAndWait()
         except Exception:
             pass
-    threading.Thread(target=_speak, daemon=True).start()
+    threading.Thread(target=_speak_local, daemon=True).start()
 
 # ---------------------------------------------------------
 # 3. LOAD MODEL & MEDIAPIPE DETECTOR
@@ -171,7 +191,17 @@ else:
         with col_b1:
             if st.button("🔊 Speak", use_container_width=True):
                 sentence_text = " ".join(st.session_state.words_list)
-                speak_text(sentence_text)
+                if sentence_text:
+                    speak_text(sentence_text)
+                    try:
+                        tts = gTTS(text=sentence_text, lang='en')
+                        fp = io.BytesIO()
+                        tts.write_to_fp(fp)
+                        fp.seek(0)
+                        st.audio(fp, format="audio/mp3", autoplay=True)
+                    except Exception:
+                        pass
+
         with col_b2:
             if st.button("⌫ Undo", use_container_width=True):
                 if st.session_state.words_list:
@@ -199,9 +229,17 @@ else:
                 if predicted_sign != "Neutral":
                     pred_placeholder.markdown(f"### Sign: **{predicted_sign}**")
                     conf_placeholder.progress(confidence, text=f"Confidence: {confidence*100:.1f}%")
-                    if st.button(f"➕ Add '{predicted_sign}' to Sentence", type="primary", use_container_width=True):
+                    if st.button(f"➕ Add '{predicted_sign}' & Speak", type="primary", use_container_width=True):
                         st.session_state.words_list.append(predicted_sign)
                         speak_text(predicted_sign)
+                        try:
+                            tts = gTTS(text=predicted_sign, lang='en')
+                            fp = io.BytesIO()
+                            tts.write_to_fp(fp)
+                            fp.seek(0)
+                            st.audio(fp, format="audio/mp3", autoplay=True)
+                        except Exception:
+                            pass
                         st.rerun()
                 else:
                     pred_placeholder.markdown("### Sign: *[ No hand / low confidence ]*")
@@ -276,9 +314,17 @@ else:
                 if predicted_sign != "Neutral":
                     pred_placeholder.markdown(f"### Sign: **{predicted_sign}**")
                     conf_placeholder.progress(confidence, text=f"Confidence: {confidence*100:.1f}%")
-                    if st.button(f"➕ Add '{predicted_sign}' to Sentence", type="primary", use_container_width=True):
+                    if st.button(f"➕ Add '{predicted_sign}' & Speak", type="primary", use_container_width=True):
                         st.session_state.words_list.append(predicted_sign)
                         speak_text(predicted_sign)
+                        try:
+                            tts = gTTS(text=predicted_sign, lang='en')
+                            fp = io.BytesIO()
+                            tts.write_to_fp(fp)
+                            fp.seek(0)
+                            st.audio(fp, format="audio/mp3", autoplay=True)
+                        except Exception:
+                            pass
                         st.rerun()
                 else:
                     pred_placeholder.markdown("### Sign: *[ No sign detected / Low confidence ]*")

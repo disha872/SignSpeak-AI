@@ -44,7 +44,7 @@ def speak_text(text):
             engine.setProperty('rate', 150)
             engine.say(text)
             engine.runAndWait()
-        except Exception as e:
+        except Exception:
             pass
     threading.Thread(target=_speak, daemon=True).start()
 
@@ -53,24 +53,53 @@ def speak_text(text):
 # ---------------------------------------------------------
 @st.cache_resource
 def load_assets():
-    model_path = "models/model.keras"
-    encoder_path = "models/label_encoder.pkl"
-    hand_model_path = "models/hand_landmarker.task"
+    base_dir = os.path.dirname(os.path.abspath(__file__))
 
-    model, encoder = None, None
+    possible_dirs = [
+        os.path.join(base_dir, "models"),
+        os.path.join(base_dir, "SignSpeak-AI-Simple", "models"),
+        "models",
+        "SignSpeak-AI-Simple/models"
+    ]
+
+    model_path, encoder_path, hand_model_path = None, None, None
+
+    for d in possible_dirs:
+        m = os.path.join(d, "model.keras")
+        e = os.path.join(d, "label_encoder.pkl")
+        h = os.path.join(d, "hand_landmarker.task")
+        if os.path.exists(m) and os.path.exists(e) and os.path.exists(h):
+            model_path, encoder_path, hand_model_path = m, e, h
+            break
+
+    if not model_path:
+        model_path = "models/model.keras"
+        encoder_path = "models/label_encoder.pkl"
+        hand_model_path = "models/hand_landmarker.task"
+
+    model, encoder, detector = None, None, None
     if os.path.exists(model_path) and os.path.exists(encoder_path):
-        model = tf.keras.models.load_model(model_path)
-        with open(encoder_path, "rb") as f:
-            encoder = pickle.load(f)
+        try:
+            model = tf.keras.models.load_model(model_path)
+            with open(encoder_path, "rb") as f:
+                encoder = pickle.load(f)
+        except Exception as ex:
+            st.error(f"Error loading Keras model: {ex}")
 
-    base_options = python.BaseOptions(model_asset_path=hand_model_path)
-    options = vision.HandLandmarkerOptions(
-        base_options=base_options,
-        running_mode=vision.RunningMode.IMAGE,
-        num_hands=1,
-        min_hand_detection_confidence=0.5
-    )
-    detector = vision.HandLandmarker.create_from_options(options)
+    if os.path.exists(hand_model_path):
+        try:
+            base_options = python.BaseOptions(model_asset_path=hand_model_path)
+            options = vision.HandLandmarkerOptions(
+                base_options=base_options,
+                running_mode=vision.RunningMode.IMAGE,
+                num_hands=1,
+                min_hand_detection_confidence=0.5
+            )
+            detector = vision.HandLandmarker.create_from_options(options)
+        except Exception as ex:
+            st.error(f"MediaPipe Initialization Error: {ex}")
+    else:
+        st.error(f"Hand landmarker model file not found at {hand_model_path}")
 
     return model, encoder, detector
 
@@ -85,8 +114,8 @@ if 'words_list' not in st.session_state:
 # ---------------------------------------------------------
 # 4. MAIN APP INTERFACE
 # ---------------------------------------------------------
-if model is None:
-    st.error("⚠️ Model not found! Please run 'python 1_collect_data.py' and then 'python 2_train_model.py' first!")
+if model is None or detector is None:
+    st.error("⚠️ Model or MediaPipe Landmarker not initialized properly. Please verify model files exist and system libraries are installed!")
 else:
     run_camera = st.checkbox("▶ Start Live Camera", value=False)
 
